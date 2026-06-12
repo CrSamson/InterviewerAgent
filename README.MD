@@ -6,6 +6,47 @@ This repository contains an experimental CrewAI notebook for interview preparati
 
 The notebook researches a target company and interviewer, generates interview questions for a specific role, and then runs an interactive practice loop where the user answers questions and receives coaching feedback.
 
+The same workflow is now available as a Rich-powered CLI app:
+
+```powershell
+.\interview
+```
+
+To install the console script, run:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
+interviewer-agent run
+```
+
+You can also pass the interview context up front:
+
+```powershell
+.\interview `
+  --company "Maneva" `
+  --interviewer "Avery Smith" `
+  --position "Forward Deployed Engineer" `
+  --job-description "Build AI workflows for industrial customers." `
+  --questions 5 `
+  --research-depth fast `
+  --max-attempts 3
+```
+
+The CLI renders a terminal "operator console" with Rich panels, a callback-driven live dashboard, concise Markdown feedback, and phase markers for `BOOT`, `RESEARCH`, `QUESTION GEN`, `PRACTICE`, and `SESSION SAVED`. During research, real CrewAI task callbacks update the company/interviewer/question progress bars, while tool callbacks update the current activity line. By default it uses faster research, generates 5 questions, pauses before practice begins, and writes session history to `runs/interview-session-YYYYMMDD-HHMMSS.json` unless `--output` is provided. Use `--research-depth standard` for the original deeper research mode.
+
+## Architecture Diagrams
+
+Interview-ready PNG diagrams are available in [`diagrams/`](diagrams/):
+
+- [`interviewer-agent-architecture.png`](diagrams/interviewer-agent-architecture.png)
+- [`interviewer-agent-agentic-flow.png`](diagrams/interviewer-agent-agentic-flow.png)
+
+Regenerate them with:
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\generate_diagrams.py
+```
+
 ## High-Level Flow
 
 ```text
@@ -51,18 +92,20 @@ from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 
 ## LLM Configuration
 
-The notebook uses Anthropic Claude through CrewAI:
+The workflow uses Anthropic Claude through CrewAI:
 
 ```python
 llm = LLM(
     model="anthropic/claude-sonnet-4-6",
     api_key=os.getenv("ANTHROPIC_API_KEY"),
-    temperature=0.7,
-    max_tokens=2000,
+    temperature=0.2,
+    max_tokens=1600,
 )
 ```
 
 `claude-sonnet-4-6` is used because the workflow needs tool calling. Earlier Claude Sonnet 4 model IDs caused strict-tool compatibility errors with CrewAI.
+
+`temperature` is kept low (`0.2`) on purpose: question generation must produce a stable, parseable format, so reproducibility is preferred over creative variety. The CLI configuration lives in [`interviewer_agent/workflow.py`](interviewer_agent/workflow.py).
 
 ## User Inputs
 
@@ -149,7 +192,8 @@ coach_agent = Agent(
 
 ### 3. Question Generation
 
-`define_questions_task` asks the coach agent to generate 10 interview questions using:
+`define_questions_task` asks the coach agent to generate the requested number of
+interview questions (default 5, configurable with `--questions`) using:
 
 - job description
 - company research
@@ -160,6 +204,17 @@ It uses the two research tasks as context:
 ```python
 context=[research_company_task, research_person_task]
 ```
+
+To keep the output deterministic and reliably parseable, the task prompt pins an
+exact output format instead of asking for free-form Markdown:
+
+- exactly N lines, one question per line;
+- each line numbered `1.`, `2.`, `3.`, and so on;
+- no title, preamble, closing remark, blank lines, bullets, bold/italic markup, or
+  surrounding quotes.
+
+This canonical numbered shape maps directly onto the parser's numbered pattern, so a
+well-behaved model run parses cleanly every time.
 
 ## Main Crew
 
@@ -197,15 +252,21 @@ questions = result.tasks_output[2].raw
 
 Important: `questions` is a Markdown string, not a Python list.
 
-The notebook parses it with:
+The CLI parses it with `parse_interview_questions` in
+[`interviewer_agent/parsing.py`](interviewer_agent/parsing.py). Even though the prompt
+asks for a canonical numbered list, models occasionally drift, so the parser is
+tolerant and recognizes several shapes:
 
-```python
-parsed_questions = re.findall(
-    r'\*\*Question\s+\d+[^:]*:\*\*\s*\n\s+\*"(.*?)"\*',
-    questions_text,
-    flags=re.DOTALL,
-)
-```
+- numbered lines (`1.`, `2)`, `3:`) — the canonical, deterministic format;
+- plain Markdown bullets (`-`, `*`, `+`);
+- notebook-style `**Question N:**` blocks with quoted text;
+- same-line `**Question N:** ...` entries.
+
+It also trims wrapping markup/quotes and de-duplicates repeated questions. Earlier the
+parser only handled the `**Question N:**` notebook format; when a model returned plain
+bullets, nothing matched and question generation failed with
+`The model returned question text, but no questions could be parsed`. The deterministic
+prompt plus the tolerant parser together prevent that failure mode.
 
 ## Deprecated Experiment: `human_input=True`
 
@@ -281,7 +342,8 @@ Each attempt is stored in `practice_history` with:
 
 ## Current Limitations
 
-- Generated questions are parsed from Markdown with regex.
+- Generated questions are still parsed from Markdown with regex (now tolerant of
+  multiple formats), rather than a structured JSON contract.
 - The notebook still contains the older `human_input=True` experiment.
 - Research output and feedback are mostly raw Markdown.
 - There is no structured scoring rubric yet.

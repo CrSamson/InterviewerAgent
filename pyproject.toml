@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interviewer-agent"
+version = "0.1.0"
+description = "A Rich-powered CLI for CrewAI interview preparation workflows."
+readme = "README.MD"
+requires-python = ">=3.12"
+dependencies = [
+    "crewai>=1.14.6",
+    "crewai-tools>=1.14.6",
+    "python-dotenv>=1.2.2",
+    "rich>=14.3.4",
+    "typer>=0.26.6",
+]
+
+[project.scripts]
+interviewer-agent = "interviewer_agent.cli:app"

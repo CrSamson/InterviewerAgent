@@ -20,5 +20,6 @@ dist/
 .ipynb_checkpoints/
 # Logs and local OS/editor files
 *.log
+runs/
 .DS_Store
 Thumbs.db
