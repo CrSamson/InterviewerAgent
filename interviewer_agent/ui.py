@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
 
+from .models import FeedbackReport, InterviewInputs, SessionSummary, WorkflowSettings
 from .progress import PHASE_ORDER, Phase, ProgressSnapshot
 
 
@@ -244,4 +245,104 @@ def render_question(console: Console, index: int, total: int, question: str) -> 
             box=box.HEAVY,
             padding=(1, 2),
         )
+    )
+
+
+def render_context_review(
+    console: Console,
+    *,
+    inputs: InterviewInputs,
+    settings: WorkflowSettings,
+    max_attempts: int,
+) -> None:
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="agent.stage", no_wrap=True)
+    table.add_column(style="white")
+    table.add_row("Company", inputs.company)
+    table.add_row("Interviewer", inputs.interviewer)
+    table.add_row("Position", inputs.job_position)
+    table.add_row("Questions", str(settings.question_count))
+    table.add_row("Research depth", settings.research_depth)
+    table.add_row("Attempts", str(max_attempts))
+    table.add_row("Job description", inputs.job_description)
+    console.print(
+        Panel(
+            table,
+            title="[agent.title]PREFLIGHT REVIEW[/]",
+            border_style="cyan",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+    )
+
+
+def render_question_review_help(console: Console) -> None:
+    render_markdown_panel(
+        console,
+        title="Question Review Commands",
+        markdown=(
+            "- Press Enter, `start`, or `accept` to begin practice.\n"
+            "- `regenerate` creates a fresh deck from the same research.\n"
+            "- `edit` changes one question.\n"
+            "- `remove` deletes one question.\n"
+            "- `exit` stops before practice."
+        ),
+        border_style="cyan",
+    )
+
+
+def render_practice_help(console: Console) -> None:
+    render_markdown_panel(
+        console,
+        title="Practice Commands",
+        markdown=(
+            "- `help` shows these commands.\n"
+            "- `repeat` shows the current question again.\n"
+            "- `hint` gives a lightweight answer structure.\n"
+            "- `example` shows a sample framing pattern.\n"
+            "- `next` skips to the next question.\n"
+            "- `exit` saves what you have and stops."
+        ),
+        border_style="cyan",
+    )
+
+
+def render_hint(console: Console, markdown: str) -> None:
+    render_markdown_panel(
+        console,
+        title="Hint",
+        markdown=markdown,
+        border_style="yellow",
+    )
+
+
+def render_example_answer(console: Console, markdown: str) -> None:
+    render_markdown_panel(
+        console,
+        title="Example Answer Shape",
+        markdown=markdown,
+        border_style="magenta",
+    )
+
+
+def render_feedback_report(
+    console: Console,
+    *,
+    title: str,
+    feedback: FeedbackReport,
+) -> None:
+    render_markdown_panel(
+        console,
+        title=title,
+        markdown=feedback.as_markdown(),
+        border_style="green",
+    )
+
+
+def render_session_summary(console: Console, summary: SessionSummary) -> None:
+    render_markdown_panel(
+        console,
+        title="Session Summary",
+        markdown=summary.as_markdown(),
+        border_style="cyan",
     )

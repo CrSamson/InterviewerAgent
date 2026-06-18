@@ -11,6 +11,7 @@ class Phase(str, Enum):
     RESEARCH = "RESEARCH"
     QUESTION_GEN = "QUESTION GEN"
     PRACTICE = "PRACTICE"
+    SUMMARY = "SUMMARY"
     SESSION_SAVED = "SESSION SAVED"
 
 
@@ -19,6 +20,7 @@ PHASE_ORDER = (
     Phase.RESEARCH,
     Phase.QUESTION_GEN,
     Phase.PRACTICE,
+    Phase.SUMMARY,
     Phase.SESSION_SAVED,
 )
 
@@ -128,6 +130,7 @@ def _phase_now_line(phase: Phase) -> str:
         Phase.RESEARCH: "Starting focused research",
         Phase.QUESTION_GEN: "Preparing question deck",
         Phase.PRACTICE: "Practice loop ready",
+        Phase.SUMMARY: "Summarizing the session",
         Phase.SESSION_SAVED: "Session saved",
     }[phase]
 

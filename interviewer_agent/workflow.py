@@ -7,8 +7,17 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from .models import InterviewInputs, QuestionGenerationResult, WorkflowSettings
-from .parsing import parse_interview_questions
+from .models import (
+    FeedbackReport,
+    InterviewInputs,
+    QuestionDeck,
+    QuestionGenerationResult,
+    ResearchBrief,
+    SessionRecord,
+    SessionSummary,
+    WorkflowSettings,
+)
+from .parsing import parse_feedback_report, parse_interview_questions, parse_session_summary
 from .progress import ProgressState
 
 
@@ -36,7 +45,7 @@ def load_environment() -> dict[str, str]:
     return validate_environment()
 
 
-class CrewInterviewWorkflow:
+class CrewAIInterviewEngine:
     def __init__(
         self,
         inputs: InterviewInputs,
@@ -51,10 +60,10 @@ class CrewInterviewWorkflow:
         self._coach_agent = None
         self._tool_listener_registered = False
 
-    async def generate_questions(
+    async def generate_research_brief(
         self,
         progress: ProgressState | None = None,
-    ) -> QuestionGenerationResult:
+    ) -> ResearchBrief:
         load_environment()
         (
             Agent,
@@ -113,10 +122,52 @@ class CrewInterviewWorkflow:
             agent=research_agent,
         )
 
-        coach_agent = self._get_coach_agent(Agent, llm)
+        task_callback = None
+        step_callback = None
+        if progress:
+            task_callback, step_callback = _make_progress_callbacks(
+                progress,
+                AgentAction,
+                AgentFinish,
+            )
+            if not self._tool_listener_registered:
+                _register_tool_usage_listener(progress)
+                self._tool_listener_registered = True
+
+        crew = Crew(
+            agents=[research_agent],
+            tasks=[research_company_task, research_person_task],
+            verbose=self.verbose,
+            process=Process.sequential,
+            embedder={"provider": "onnx", "config": {}},
+            task_callback=task_callback,
+            step_callback=step_callback,
+        )
+
+        result = await crew.kickoff_async(
+            {"topic": "Research interview context."}
+        )
+        outputs = list(getattr(result, "tasks_output", []) or [])
+        return ResearchBrief(
+            company_research=_task_output_raw(outputs, 0),
+            interviewer_research=_task_output_raw(outputs, 1),
+        )
+
+    async def generate_question_deck(
+        self,
+        *,
+        research: ResearchBrief,
+        progress: ProgressState | None = None,
+    ) -> QuestionDeck:
+        load_environment()
+        Agent, Crew, LLM, Process, Task, *_ = _load_crewai()
+        coach_agent = self._get_coach_agent(Agent, self._get_llm(LLM))
+
         define_questions_task = Task(
             name="questions",
             description=(
+                f"Company research brief:\n{research.company_research}\n\n"
+                f"Interviewer research brief:\n{research.interviewer_research}\n\n"
                 f"Based on the job description: {self.inputs.job_description}, "
                 f"prepare exactly {self.settings.question_count} relevant interview "
                 f"questions for the position of {self.inputs.job_position} at "
@@ -139,45 +190,48 @@ class CrewInterviewWorkflow:
                 "`<n>.` followed by one interview question, and nothing else."
             ),
             agent=coach_agent,
-            context=[research_company_task, research_person_task],
         )
 
         task_callback = None
         step_callback = None
         if progress:
-            task_callback, step_callback = _make_progress_callbacks(
+            task_callback, step_callback = _make_single_task_progress_callbacks(
                 progress,
-                AgentAction,
-                AgentFinish,
+                "questions",
             )
-            if not self._tool_listener_registered:
-                _register_tool_usage_listener(progress)
-                self._tool_listener_registered = True
 
         crew = Crew(
-            agents=[research_agent, coach_agent],
-            tasks=[research_company_task, research_person_task, define_questions_task],
+            agents=[coach_agent],
+            tasks=[define_questions_task],
             verbose=self.verbose,
             process=Process.sequential,
-            embedder={"provider": "onnx", "config": {}},
             task_callback=task_callback,
             step_callback=step_callback,
         )
 
         result = await crew.kickoff_async(
-            {"topic": "Write a list of question to prepare for the interview."}
+            {"topic": "Write a list of questions to prepare for the interview."}
         )
         outputs = list(getattr(result, "tasks_output", []) or [])
-        company_research = _task_output_raw(outputs, 0)
-        interviewer_research = _task_output_raw(outputs, 1)
-        questions_markdown = _task_output_raw(outputs, 2) or str(result)
+        questions_markdown = _task_output_raw(outputs, 0) or str(result)
         questions = parse_interview_questions(questions_markdown)[: self.settings.question_count]
 
-        return QuestionGenerationResult(
-            company_research=company_research,
-            interviewer_research=interviewer_research,
+        return QuestionDeck(
             questions_markdown=questions_markdown,
             questions=questions,
+        )
+
+    async def generate_questions(
+        self,
+        progress: ProgressState | None = None,
+    ) -> QuestionGenerationResult:
+        research = await self.generate_research_brief(progress=progress)
+        deck = await self.generate_question_deck(research=research, progress=progress)
+        return QuestionGenerationResult(
+            company_research=research.company_research,
+            interviewer_research=research.interviewer_research,
+            questions_markdown=deck.questions_markdown,
+            questions=deck.questions,
         )
 
     async def generate_answer_feedback(
@@ -186,7 +240,7 @@ class CrewInterviewWorkflow:
         question: str,
         answer: str,
         attempt_number: int,
-    ) -> str:
+    ) -> FeedbackReport:
         load_environment()
         Agent, Crew, LLM, Process, Task, *_ = _load_crewai()
         coach_agent = self._get_coach_agent(Agent, self._get_llm(LLM))
@@ -201,16 +255,18 @@ Interview question:
 Candidate answer attempt #{attempt_number}:
 {answer}
 
-Give feedback that helps the candidate improve the next attempt. Include:
-- Quick assessment
-- What worked
-- What to improve
-- A stronger answer outline
-- One concrete instruction for the next revision
+Give feedback that helps the candidate improve the next attempt.
 
-Keep the feedback concise: maximum 180 words. Do not use tables or emoji.
+Output exactly these five fields, one per paragraph:
+Score: <integer from 1 to 5>/5
+What worked: <one concise sentence>
+Missing signal: <one concise sentence>
+Stronger outline: <one concise sentence>
+Next revision: <one concrete instruction>
+
+Keep the full response under 180 words. Do not use tables or emoji.
 """,
-            expected_output="Concise actionable interview coaching feedback in Markdown.",
+            expected_output="Structured coaching feedback with score and four rubric fields.",
             agent=coach_agent,
         )
 
@@ -221,7 +277,64 @@ Keep the feedback concise: maximum 180 words. Do not use tables or emoji.
             process=Process.sequential,
         )
 
-        return str(await feedback_crew.kickoff_async())
+        return parse_feedback_report(str(await feedback_crew.kickoff_async()))
+
+    async def generate_session_summary(
+        self,
+        *,
+        session: SessionRecord,
+    ) -> SessionSummary:
+        if not session.attempts:
+            return SessionSummary(
+                recurring_gaps="No completed answers were recorded.",
+                strongest_answer="No answer attempts to compare.",
+                weakest_answer="No answer attempts to compare.",
+                next_practice_plan="Run another session and answer at least one question.",
+            )
+
+        load_environment()
+        Agent, Crew, LLM, Process, Task, *_ = _load_crewai()
+        coach_agent = self._get_coach_agent(Agent, self._get_llm(LLM))
+        attempts = "\n\n".join(
+            [
+                (
+                    f"Q{attempt.question_index}, attempt {attempt.attempt}\n"
+                    f"Question: {_truncate(attempt.question, 280)}\n"
+                    f"Answer: {_truncate(attempt.answer, 700)}\n"
+                    f"Feedback: {_truncate(attempt.feedback, 500)}"
+                )
+                for attempt in session.attempts
+            ]
+        )
+        summary_task = Task(
+            description=f"""
+You are summarizing an interview practice session for a candidate.
+
+Role: {session.inputs.job_position}
+Company: {session.inputs.company}
+
+Attempts:
+{attempts}
+
+Output exactly these four fields, one per paragraph:
+Recurring gaps: <patterns the candidate should improve>
+Strongest answer: <question or answer that was strongest and why>
+Weakest answer: <question or answer that needs the most work and why>
+Next practice plan: <specific next steps for the next session>
+
+Keep the full response under 220 words. Do not use tables or emoji.
+""",
+            expected_output="Structured session summary with four fields.",
+            agent=coach_agent,
+        )
+        summary_crew = Crew(
+            agents=[coach_agent],
+            tasks=[summary_task],
+            verbose=self.verbose,
+            process=Process.sequential,
+        )
+
+        return parse_session_summary(str(await summary_crew.kickoff_async()))
 
     def _get_llm(self, LLM):
         if self._llm is None:
@@ -251,6 +364,9 @@ Keep the feedback concise: maximum 180 words. Do not use tables or emoji.
         return self._coach_agent
 
 
+CrewInterviewWorkflow = CrewAIInterviewEngine
+
+
 def _load_crewai():
     from crewai import Agent, Crew, LLM, Process, Task
     from crewai.agents.parser import AgentAction, AgentFinish
@@ -277,6 +393,7 @@ def _make_progress_callbacks(
     task_order = ("company", "interviewer", "questions")
     ordinal_index = 0
     ordinal_lock = threading.Lock()
+    completed: set[str] = set()
 
     def task_callback(output: Any) -> None:
         nonlocal ordinal_index
@@ -284,8 +401,14 @@ def _make_progress_callbacks(
         key = str(name).strip().casefold() if name else ""
         if key not in task_order:
             with ordinal_lock:
+                while (
+                    ordinal_index < len(task_order)
+                    and task_order[ordinal_index] in completed
+                ):
+                    ordinal_index += 1
                 key = task_order[min(ordinal_index, len(task_order) - 1)]
                 ordinal_index += 1
+        completed.add(key)
         progress.complete_task(key)
 
     def step_callback(step: Any) -> None:
@@ -298,6 +421,18 @@ def _make_progress_callbacks(
             progress.note_thinking(str(thought))
             return
         thought = getattr(step, "thought", None)
+        if thought:
+            progress.note_thinking(str(thought))
+
+    return task_callback, step_callback
+
+
+def _make_single_task_progress_callbacks(progress: ProgressState, key: str):
+    def task_callback(output: Any) -> None:
+        progress.complete_task(key)
+
+    def step_callback(step: Any) -> None:
+        thought = getattr(step, "thought", "") or getattr(step, "text", "")
         if thought:
             progress.note_thinking(str(thought))
 
@@ -341,3 +476,10 @@ def _task_output_raw(outputs: list[object], index: int) -> str:
         return ""
     output = outputs[index]
     return str(getattr(output, "raw", output) or "")
+
+
+def _truncate(value: str, limit: int) -> str:
+    compact = " ".join(str(value).split())
+    if len(compact) <= limit:
+        return compact
+    return compact[: max(0, limit - 3)].rstrip() + "..."

@@ -57,6 +57,20 @@ class ProgressStateTests(unittest.TestCase):
         done = [task.key for task in snapshot.research_tasks if task.done]
         self.assertEqual(done, ["company", "interviewer"])
 
+    def test_task_callback_fallback_skips_named_completed_tasks(self) -> None:
+        state = ProgressState(depth="fast", question_count=5, max_attempts=3)
+        task_callback, _ = _make_progress_callbacks(
+            state,
+            FakeAgentAction,
+            FakeAgentFinish,
+        )
+
+        task_callback(FakeTaskOutput("company"))
+        task_callback(FakeTaskOutput())
+
+        done = [task.key for task in state.snapshot().research_tasks if task.done]
+        self.assertEqual(done, ["company", "interviewer"])
+
     def test_step_callback_surfaces_thoughts_without_counting_tools(self) -> None:
         # Tool calls are counted by the event-bus listener, not step_callback,
         # so AgentAction steps must not increment the counter (the ReAct path

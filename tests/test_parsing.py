@@ -1,6 +1,10 @@
 import unittest
 
-from interviewer_agent.parsing import parse_interview_questions
+from interviewer_agent.parsing import (
+    parse_feedback_report,
+    parse_interview_questions,
+    parse_session_summary,
+)
 
 
 class ParseInterviewQuestionsTests(unittest.TestCase):
@@ -71,6 +75,34 @@ class ParseInterviewQuestionsTests(unittest.TestCase):
                 "How do you earn trust with operators?",
             ],
         )
+
+    def test_parse_feedback_report_fields(self) -> None:
+        report = parse_feedback_report(
+            """
+Score: 4/5
+What worked: Clear ownership.
+Missing signal: Needs metrics.
+Stronger outline: Situation, action, result.
+Next revision: Quantify the impact.
+"""
+        )
+
+        self.assertEqual(report.score, 4)
+        self.assertEqual(report.what_worked, "Clear ownership.")
+        self.assertEqual(report.next_instruction, "Quantify the impact.")
+
+    def test_parse_session_summary_fields(self) -> None:
+        summary = parse_session_summary(
+            """
+Recurring gaps: Needs metrics.
+Strongest answer: Question one had strong ownership.
+Weakest answer: Question two was too abstract.
+Next practice plan: Practice one quantified story.
+"""
+        )
+
+        self.assertEqual(summary.recurring_gaps, "Needs metrics.")
+        self.assertEqual(summary.next_practice_plan, "Practice one quantified story.")
 
 
 if __name__ == "__main__":
